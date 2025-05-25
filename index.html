@@ -1,0 +1,505 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>3D Cube Puzzle</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            font-family: Arial, sans-serif;
+            color: white;
+            overflow: hidden;
+        }
+        
+        .game-container {
+            text-align: center;
+            position: relative;
+        }
+        
+        canvas {
+            border-radius: 10px;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.3);
+            cursor: grab;
+        }
+        
+        canvas:active {
+            cursor: grabbing;
+        }
+        
+        .ui {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            font-size: 18px;
+            font-weight: bold;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.8);
+            z-index: 10;
+        }
+        
+        .controls {
+            position: absolute;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            font-size: 14px;
+            opacity: 0.9;
+            text-align: center;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.8);
+        }
+        
+        .reset-btn {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            background: rgba(255,255,255,0.2);
+            color: white;
+            border: 2px solid rgba(255,255,255,0.3);
+            padding: 10px 20px;
+            font-size: 14px;
+            border-radius: 8px;
+            cursor: pointer;
+            backdrop-filter: blur(10px);
+            transition: all 0.3s;
+        }
+        
+        .reset-btn:hover {
+            background: rgba(255,255,255,0.3);
+            border-color: rgba(255,255,255,0.5);
+        }
+    </style>
+</head>
+<body>
+    <div class="game-container">
+        <div class="ui">
+            <div>Black Squares: <span id="blackCount">0</span></div>
+            <div>Total Squares: <span id="totalSquares">54</span></div>
+        </div>
+        
+        <button class="reset-btn" onclick="resetCube()">Reset Cube</button>
+        
+        <canvas id="gameCanvas" width="800" height="600"></canvas>
+        
+        <div class="controls">
+            Click squares to toggle them and diagonal neighbors<br>
+            Drag outside the cube to rotate • Try to make patterns!
+        </div>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script>
+        let scene, camera, renderer, cube;
+        let cubeStates = {}; // Store the state of each square (true = black, false = white)
+        let isRotating = false;
+        let previousMousePosition = { x: 0, y: 0 };
+        let raycaster = new THREE.Raycaster();
+        let mouse = new THREE.Vector2();
+        let cubeGroup = new THREE.Group();
+        
+        // Initialize the game
+        function init() {
+            // Create scene
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x1a1a2e);
+            
+            // Create camera
+            camera = new THREE.PerspectiveCamera(75, 800/600, 0.1, 1000);
+            camera.position.set(5, 5, 5);
+            camera.lookAt(0, 0, 0);
+            
+            // Create renderer
+            const canvas = document.getElementById('gameCanvas');
+            renderer = new THREE.WebGLRenderer({ canvas: canvas, antialias: true });
+            renderer.setSize(800, 600);
+            renderer.shadowMap.enabled = true;
+            renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+            
+            // Add lights
+            const ambientLight = new THREE.AmbientLight(0x404040, 0.6);
+            scene.add(ambientLight);
+            
+            const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+            directionalLight.position.set(10, 10, 5);
+            directionalLight.castShadow = true;
+            scene.add(directionalLight);
+            
+            // Create the cube
+            createCube();
+            
+            // Add event listeners
+            canvas.addEventListener('mousedown', onMouseDown);
+            canvas.addEventListener('mousemove', onMouseMove);
+            canvas.addEventListener('mouseup', onMouseUp);
+            canvas.addEventListener('click', onCanvasClick);
+            
+            // Start render loop
+            animate();
+            
+            updateUI();
+        }
+        
+        function createCube() {
+            scene.remove(cubeGroup);
+            cubeGroup = new THREE.Group();
+            cubeStates = {};
+            
+            const cubeSize = 2;
+            const gap = 0.05;
+            
+            // Create inner cube (light yellow)
+            const innerCubeGeometry = new THREE.BoxGeometry(cubeSize - 0.1, cubeSize - 0.1, cubeSize - 0.1);
+            const innerCubeMaterial = new THREE.MeshLambertMaterial({ color: 0xffffe0 });
+            const innerCube = new THREE.Mesh(innerCubeGeometry, innerCubeMaterial);
+            cubeGroup.add(innerCube);
+            
+            // Define the six faces of the cube
+            const faces = [
+                { name: 'front', position: [0, 0, cubeSize/2 + gap], rotation: [0, 0, 0] },
+                { name: 'back', position: [0, 0, -cubeSize/2 - gap], rotation: [0, Math.PI, 0] },
+                { name: 'right', position: [cubeSize/2 + gap, 0, 0], rotation: [0, Math.PI/2, 0] },
+                { name: 'left', position: [-cubeSize/2 - gap, 0, 0], rotation: [0, -Math.PI/2, 0] },
+                { name: 'top', position: [0, cubeSize/2 + gap, 0], rotation: [-Math.PI/2, 0, 0] },
+                { name: 'bottom', position: [0, -cubeSize/2 - gap, 0], rotation: [Math.PI/2, 0, 0] }
+            ];
+            
+            faces.forEach(face => {
+                const faceGroup = new THREE.Group();
+                faceGroup.position.set(...face.position);
+                faceGroup.rotation.set(...face.rotation);
+                
+                // Create 3x3 grid of squares for each face
+                for (let row = 0; row < 3; row++) {
+                    for (let col = 0; col < 3; col++) {
+                        const squareGeometry = new THREE.PlaneGeometry(0.6, 0.6);
+                        const squareMaterial = new THREE.MeshLambertMaterial({ 
+                            color: 0xffffff,
+                            side: THREE.DoubleSide
+                        });
+                        
+                        const square = new THREE.Mesh(squareGeometry, squareMaterial);
+                        
+                        // Position squares in 3x3 grid
+                        const x = (col - 1) * 0.65;
+                        const y = (1 - row) * 0.65; // Flip Y to match expected layout
+                        square.position.set(x, y, 0.001);
+                        
+                        // Store square info for interaction
+                        square.userData = {
+                            face: face.name,
+                            row: row,
+                            col: col,
+                            id: `${face.name}-${row}-${col}`
+                        };
+                        
+                        // Initialize state as white (false)
+                        cubeStates[square.userData.id] = false;
+                        
+                        faceGroup.add(square);
+                    }
+                }
+                
+                cubeGroup.add(faceGroup);
+            });
+            
+            scene.add(cubeGroup);
+        }
+        
+        function onMouseDown(event) {
+            isRotating = true;
+            previousMousePosition = {
+                x: event.clientX,
+                y: event.clientY
+            };
+        }
+        
+        function onMouseMove(event) {
+            if (isRotating) {
+                const deltaMove = {
+                    x: event.clientX - previousMousePosition.x,
+                    y: event.clientY - previousMousePosition.y
+                };
+                
+                const deltaRotationQuaternion = new THREE.Quaternion()
+                    .setFromEuler(new THREE.Euler(
+                        toRadians(deltaMove.y * 0.5),
+                        toRadians(deltaMove.x * 0.5),
+                        0,
+                        'XYZ'
+                    ));
+                
+                cubeGroup.quaternion.multiplyQuaternions(deltaRotationQuaternion, cubeGroup.quaternion);
+                
+                previousMousePosition = {
+                    x: event.clientX,
+                    y: event.clientY
+                };
+            }
+        }
+        
+        function onMouseUp() {
+            isRotating = false;
+        }
+        
+        function onCanvasClick(event) {
+            if (isRotating) return;
+            
+            const rect = renderer.domElement.getBoundingClientRect();
+            mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+            mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+            
+            raycaster.setFromCamera(mouse, camera);
+            
+            const intersects = raycaster.intersectObjects(cubeGroup.children, true);
+            
+            if (intersects.length > 0) {
+                const clickedSquare = intersects[0].object;
+                if (clickedSquare.userData && clickedSquare.userData.id) {
+                    toggleSquare(clickedSquare);
+                }
+            }
+        }
+        
+        function toggleSquare(square) {
+            const { face, row, col, id } = square.userData;
+            
+            // Toggle the clicked square
+            toggleSquareState(id);
+            
+            // Get all diagonal neighbors including cross-face ones
+            const diagonalNeighbors = getDiagonalNeighbors(face, row, col);
+            
+            diagonalNeighbors.forEach(neighborId => {
+                if (neighborId && cubeStates.hasOwnProperty(neighborId)) {
+                    toggleSquareState(neighborId);
+                }
+            });
+            
+            updateCubeVisuals();
+            updateUI();
+        }
+        
+        function getDiagonalNeighbors(face, row, col) {
+            const neighbors = [];
+            
+            // Local diagonal neighbors (same face)
+            const localDiagonals = [
+                { dr: -1, dc: -1 }, { dr: -1, dc: 1 },
+                { dr: 1, dc: -1 }, { dr: 1, dc: 1 }
+            ];
+            
+            localDiagonals.forEach(({ dr, dc }) => {
+                const newRow = row + dr;
+                const newCol = col + dc;
+                
+                if (newRow >= 0 && newRow < 3 && newCol >= 0 && newCol < 3) {
+                    neighbors.push(`${face}-${newRow}-${newCol}`);
+                } else {
+                    // Handle cross-face diagonal neighbors
+                    const crossFaceNeighbor = getCrossFaceDiagonal(face, row, col, dr, dc);
+                    if (crossFaceNeighbor) {
+                        neighbors.push(crossFaceNeighbor);
+                    }
+                }
+            });
+            
+            return neighbors;
+        }
+        
+        function getCrossFaceDiagonal(face, row, col, dr, dc) {
+            // Map face adjacencies and coordinate transformations
+            const faceMap = {
+                'front': {
+                    up: { face: 'top', transform: (r, c) => [2, c] },
+                    down: { face: 'bottom', transform: (r, c) => [0, c] },
+                    left: { face: 'left', transform: (r, c) => [r, 2] },
+                    right: { face: 'right', transform: (r, c) => [r, 0] }
+                },
+                'back': {
+                    up: { face: 'top', transform: (r, c) => [0, 2-c] },
+                    down: { face: 'bottom', transform: (r, c) => [2, 2-c] },
+                    left: { face: 'right', transform: (r, c) => [r, 2] },
+                    right: { face: 'left', transform: (r, c) => [r, 0] }
+                },
+                'right': {
+                    up: { face: 'top', transform: (r, c) => [c, 2] },
+                    down: { face: 'bottom', transform: (r, c) => [2-c, 2] },
+                    left: { face: 'front', transform: (r, c) => [r, 2] },
+                    right: { face: 'back', transform: (r, c) => [r, 0] }
+                },
+                'left': {
+                    up: { face: 'top', transform: (r, c) => [2-c, 0] },
+                    down: { face: 'bottom', transform: (r, c) => [c, 0] },
+                    left: { face: 'back', transform: (r, c) => [r, 2] },
+                    right: { face: 'front', transform: (r, c) => [r, 0] }
+                },
+                'top': {
+                    up: { face: 'back', transform: (r, c) => [0, 2-c] },
+                    down: { face: 'front', transform: (r, c) => [0, c] },
+                    left: { face: 'left', transform: (r, c) => [0, 2-r] },
+                    right: { face: 'right', transform: (r, c) => [0, r] }
+                },
+                'bottom': {
+                    up: { face: 'front', transform: (r, c) => [2, c] },
+                    down: { face: 'back', transform: (r, c) => [2, 2-c] },
+                    left: { face: 'left', transform: (r, c) => [2, r] },
+                    right: { face: 'right', transform: (r, c) => [2, 2-r] }
+                }
+            };
+            
+            const newRow = row + dr;
+            const newCol = col + dc;
+            
+            // Determine which direction we're going
+            let direction = null;
+            if (newRow < 0 && newCol < 0) direction = 'up-left';
+            else if (newRow < 0 && newCol >= 3) direction = 'up-right';
+            else if (newRow >= 3 && newCol < 0) direction = 'down-left';
+            else if (newRow >= 3 && newCol >= 3) direction = 'down-right';
+            else if (newRow < 0) direction = 'up';
+            else if (newRow >= 3) direction = 'down';
+            else if (newCol < 0) direction = 'left';
+            else if (newCol >= 3) direction = 'right';
+            
+            if (!direction || !faceMap[face]) return null;
+            
+            // Handle corner cases (diagonal across edges)
+            if (direction.includes('-')) {
+                const [dir1, dir2] = direction.split('-');
+                const adj1 = faceMap[face][dir1];
+                const adj2 = faceMap[face][dir2];
+                
+                if (adj1 && adj2) {
+                    // Find the corner square that's diagonal to the current position
+                    let targetRow, targetCol;
+                    
+                    if (direction === 'up-left') {
+                        targetRow = 0; targetCol = 0;
+                    } else if (direction === 'up-right') {
+                        targetRow = 0; targetCol = 2;
+                    } else if (direction === 'down-left') {
+                        targetRow = 2; targetCol = 0;
+                    } else if (direction === 'down-right') {
+                        targetRow = 2; targetCol = 2;
+                    }
+                    
+                    // Try to find the adjacent face that contains this corner
+                    // This is complex cube topology, so we'll use a simplified approach
+                    const cornerMappings = getCornerMappings(face, row, col, dr, dc);
+                    return cornerMappings;
+                }
+            } else {
+                // Handle edge cases
+                const adj = faceMap[face][direction];
+                if (adj) {
+                    const edgeRow = Math.max(0, Math.min(2, newRow));
+                    const edgeCol = Math.max(0, Math.min(2, newCol));
+                    const [adjRow, adjCol] = adj.transform(edgeRow, edgeCol);
+                    
+                    if (adjRow >= 0 && adjRow < 3 && adjCol >= 0 && adjCol < 3) {
+                        return `${adj.face}-${adjRow}-${adjCol}`;
+                    }
+                }
+            }
+            
+            return null;
+        }
+        
+        function getCornerMappings(face, row, col, dr, dc) {
+            // Simplified corner mapping for cube topology
+            const corners = {
+                // Front face corners
+                'front-0-0': { 'up-left': 'top-2-0', 'left-up': 'left-0-2' },
+                'front-0-2': { 'up-right': 'top-2-2', 'right-up': 'right-0-0' },
+                'front-2-0': { 'down-left': 'bottom-0-0', 'left-down': 'left-2-2' },
+                'front-2-2': { 'down-right': 'bottom-0-2', 'right-down': 'right-2-0' },
+                
+                // Back face corners
+                'back-0-0': { 'up-right': 'top-0-2', 'right-up': 'right-0-2' },
+                'back-0-2': { 'up-left': 'top-0-0', 'left-up': 'left-0-0' },
+                'back-2-0': { 'down-right': 'bottom-2-2', 'right-down': 'right-2-2' },
+                'back-2-2': { 'down-left': 'bottom-2-0', 'left-down': 'left-2-0' },
+                
+                // Top face corners
+                'top-0-0': { 'up-left': 'back-0-2', 'left-up': 'left-0-0' },
+                'top-0-2': { 'up-right': 'back-0-0', 'right-up': 'right-0-0' },
+                'top-2-0': { 'down-left': 'front-0-0', 'left-down': 'left-0-2' },
+                'top-2-2': { 'down-right': 'front-0-2', 'right-down': 'right-0-2' },
+                
+                // Bottom face corners
+                'bottom-0-0': { 'up-left': 'front-2-0', 'left-up': 'left-2-2' },
+                'bottom-0-2': { 'up-right': 'front-2-2', 'right-up': 'right-2-0' },
+                'bottom-2-0': { 'down-left': 'back-2-2', 'left-down': 'left-2-0' },
+                'bottom-2-2': { 'down-right': 'back-2-0', 'right-down': 'right-2-2' },
+                
+                // Left face corners
+                'left-0-0': { 'up-left': 'top-0-0', 'left-up': 'back-0-2' },
+                'left-0-2': { 'up-right': 'top-2-0', 'right-up': 'front-0-0' },
+                'left-2-0': { 'down-left': 'bottom-2-0', 'left-down': 'back-2-2' },
+                'left-2-2': { 'down-right': 'bottom-0-0', 'right-down': 'front-2-0' },
+                
+                // Right face corners
+                'right-0-0': { 'up-left': 'top-0-2', 'left-up': 'front-0-2' },
+                'right-0-2': { 'up-right': 'top-2-2', 'right-up': 'back-0-0' },
+                'right-2-0': { 'down-left': 'bottom-0-2', 'left-down': 'front-2-2' },
+                'right-2-2': { 'down-right': 'bottom-2-2', 'right-down': 'back-2-0' }
+            };
+            
+            const currentSquare = `${face}-${row}-${col}`;
+            const direction = `${dr < 0 ? 'up' : 'down'}-${dc < 0 ? 'left' : 'right'}`;
+            
+            if (corners[currentSquare] && corners[currentSquare][direction]) {
+                return corners[currentSquare][direction];
+            }
+            
+            return null;
+        }
+        
+        function toggleSquareState(id) {
+            cubeStates[id] = !cubeStates[id];
+        }
+        
+        function updateCubeVisuals() {
+            cubeGroup.children.forEach(faceGroup => {
+                faceGroup.children.forEach(square => {
+                    if (square.userData && square.userData.id) {
+                        const isBlack = cubeStates[square.userData.id];
+                        square.material.color.setHex(isBlack ? 0x000000 : 0xffffff);
+                    }
+                });
+            });
+        }
+        
+        function updateUI() {
+            const blackCount = Object.values(cubeStates).filter(state => state).length;
+            document.getElementById('blackCount').textContent = blackCount;
+        }
+        
+        function resetCube() {
+            // Reset all states to white (false)
+            Object.keys(cubeStates).forEach(id => {
+                cubeStates[id] = false;
+            });
+            updateCubeVisuals();
+            updateUI();
+        }
+        
+        function toRadians(angle) {
+            return angle * (Math.PI / 180);
+        }
+        
+        function animate() {
+            requestAnimationFrame(animate);
+            renderer.render(scene, camera);
+        }
+        
+        // Start the game
+        init();
+    </script>
+</body>
+</html>
